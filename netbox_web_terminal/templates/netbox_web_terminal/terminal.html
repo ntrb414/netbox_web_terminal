@@ -1,0 +1,73 @@
+{% extends 'base/layout.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                <strong>SSH 终端: {{ device.name }} ({{ device_ip }})</strong>
+                <div class="float-end">
+                    <span id="status" class="badge bg-secondary">正在初始化...</span>
+                </div>
+            </div>
+            <div class="card-body bg-dark p-0">
+                <div id="terminal" style="height: 600px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- xterm.js -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.1.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.7.0/lib/xterm-addon-fit.js"></script>
+
+<script>
+    const term = new Terminal({
+        cursorBlink: true,
+        theme: {
+            background: '#1a1a1a'
+        }
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    const statusLabel = document.getElementById('status');
+    
+    // WebSocket 连接
+    const ws_scheme = window.location.protocol === "https:" ? "wss" : "ws";
+    const ws_path = ws_scheme + "://" + window.location.host + "/ws/terminal/{{ device.pk }}/";
+    const socket = new WebSocket(ws_path);
+
+    socket.onopen = function(e) {
+        statusLabel.className = 'badge bg-success';
+        statusLabel.innerText = '已连接';
+        term.focus();
+    };
+
+    socket.onmessage = function(e) {
+        const data = JSON.parse(e.data);
+        if (data.message) {
+            term.write(data.message);
+        }
+    };
+
+    socket.onclose = function(e) {
+        statusLabel.className = 'badge bg-danger';
+        statusLabel.innerText = '已断开';
+        term.write('\r\n连接已关闭\r\n');
+    };
+
+    term.onData(data => {
+        socket.send(JSON.stringify({
+            'data': data
+        }));
+    });
+
+    window.onresize = function() {
+        fitAddon.fit();
+    };
+</script>
+{% endblock %}
