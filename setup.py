@@ -9,7 +9,6 @@ setup(
     license='Apache 2.0',
     install_requires=[
         'paramiko',
-        'channels',
     ],
     packages=find_packages(),
     include_package_data=True,
