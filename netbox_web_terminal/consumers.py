@@ -43,6 +43,14 @@ class TerminalConsumer(WebsocketConsumer):
             self.username = user_input_name if user_input_name else default_username
             self.password = user_input_pass if user_input_pass else default_password
 
+            # 3. 获取终端初始大小
+            try:
+                self.rows = int(query_params.get('rows', [24])[0])
+                self.cols = int(query_params.get('cols', [80])[0])
+            except (ValueError, TypeError):
+                self.rows = 24
+                self.cols = 80
+
             # 启动 SSH 线程
             self.ssh_client = paramiko.SSHClient()
             self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -55,7 +63,11 @@ class TerminalConsumer(WebsocketConsumer):
                     look_for_keys=False,
                     timeout=10
                 )
-                self.channel = self.ssh_client.invoke_shell(term='xterm', width=80, height=24)
+                self.channel = self.ssh_client.invoke_shell(
+                    term='xterm', 
+                    width=self.cols, 
+                    height=self.rows
+                )
                 
                 # 开启监听线程
                 self.thread = threading.Thread(target=self.receive_ssh)
@@ -77,14 +89,25 @@ class TerminalConsumer(WebsocketConsumer):
         data = json.loads(text_data)
         if 'data' in data:
             self.channel.send(data['data'])
+        elif 'resize' in data:
+            rows = data['resize'].get('rows')
+            cols = data['resize'].get('cols')
+            if rows and cols:
+                self.channel.resize_pty(width=cols, height=rows)
 
     def receive_ssh(self):
-        while True:
-            if self.channel.recv_ready():
-                data = self.channel.recv(1024).decode('utf-8', errors='ignore')
-                self.send_message(data)
-            if self.channel.exit_status_ready():
-                break
+        try:
+            while True:
+                # 阻塞式读取，更高效
+                data = self.channel.recv(4096)
+                if not data:
+                    break
+                # 解码并发送
+                self.send_message(data.decode('utf-8', errors='ignore'))
+        except Exception:
+            pass
+        finally:
+            self.close()
 
     def send_message(self, message):
         self.send(text_data=json.dumps({

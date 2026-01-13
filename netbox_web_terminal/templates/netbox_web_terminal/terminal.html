@@ -6,21 +6,66 @@
 {% block extra_styles %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
 <style>
-    #terminal-container {
-        height: 70vh;
+    /* 核心布局：固定 3/4 屏幕高度，居中显示 */
+    #terminal-card-body {
+        height: 75vh; /* 占据界面的 3/4 高度 */
         background-color: #000;
-        padding: 10px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden !important;
+        padding: 0 !important;
         border-radius: 0 0 4px 4px;
     }
+
+    #terminal-container {
+        flex-grow: 1;
+        background-color: #000;
+        padding: 0;
+        margin: 0;
+        overflow: hidden; 
+        position: relative;
+    }
+
+    /* 强制 xterm 填满父容器并启用内部滚动 */
+    .xterm {
+        padding: 15px;
+        height: 100% !important;
+    }
+
     .xterm .xterm-viewport {
-        overflow-y: auto;
+        overflow-y: auto !important; /* 启用独立滚动条 */
+        height: 100% !important;
+    }
+
+    /* 自定义滚动条样式，使其在深色背景下清晰可见 */
+    .xterm .xterm-viewport::-webkit-scrollbar {
+        width: 12px !important;
+        display: block !important;
+    }
+    .xterm .xterm-viewport::-webkit-scrollbar-track {
+        background: #000 !important;
+        border-left: 1px solid #222;
+    }
+    .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+        background: #333 !important;
+        border: 2px solid #000;
+        border-radius: 6px;
+    }
+    .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+        background: #555 !important;
+    }
+
+    /* 修正 NetBox 默认 card 样式，防止溢出 */
+    .card {
+        margin-bottom: 20px;
+        overflow: hidden;
     }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col col-md-12">
+<div class="row justify-content-center">
+    <div class="col col-12 col-lg-9"> <!-- 占据界面的 3/4 宽度 (col-9/12) -->
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <div>
@@ -35,93 +80,164 @@
                     </button>
                 </div>
             </div>
-            <div class="card-body p-0">
-                {% if error %}
-                <div class="alert alert-danger m-3">
-                    {{ error }}
+            <div id="terminal-card-body" class="card-body">
+                <div id="debug-info" class="p-2 small text-muted bg-light border-bottom" style="display: none; color: #333 !important;">
+                    <strong>Debug:</strong> <span id="debug-status">Initializing...</span>
                 </div>
-                {% else %}
                 <div id="terminal-container"></div>
-                {% endif %}
             </div>
         </div>
     </div>
 </div>
 {% endblock %}
 
-{% block extra_scripts %}
+{% block javascript %}
 {% if not error %}
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.1.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.7.0/lib/xterm-addon-fit.js"></script>
 
 <script>
+    // 立即执行一次，确保 debug 能够显示
+    (function() {
+        console.log('Script loaded, waiting for DOM...');
+    })();
+
     document.addEventListener('DOMContentLoaded', function() {
-        const term = new Terminal({
-            cursorBlink: true,
-            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-            fontSize: 14,
-            theme: {
-                background: '#000000'
+        const debugInfo = document.getElementById('debug-info');
+        const debugStatus = document.getElementById('debug-status');
+        
+        function logDebug(msg, isError = false) {
+            console.log('[Terminal Debug] ' + msg);
+            if (debugInfo && debugStatus) {
+                debugInfo.style.display = 'block';
+                debugStatus.innerHTML = msg;
+                if (isError) debugStatus.className = 'text-danger';
             }
-        });
-        const fitAddon = new FitAddon.FitAddon();
-        term.loadAddon(fitAddon);
-
-        const container = document.getElementById('terminal-container');
-        term.open(container);
-        fitAddon.fit();
-
-        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-        
-        // 构造带凭据参数的 WebSocket URL
-        let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
-        const params = new URLSearchParams();
-        {% if ssh_username %}
-        params.append('username', '{{ ssh_username|escapejs }}');
-        {% endif %}
-        {% if ssh_password %}
-        params.append('password', '{{ ssh_password|escapejs }}');
-        {% endif %}
-        
-        const queryString = params.toString();
-        if (queryString) {
-            wsUrl += '?' + queryString;
         }
 
-        const socket = new WebSocket(wsUrl);
-
-        socket.onopen = () => {
-            term.write('\x1b[1;32m[Connected to NetBox Web SSH Bridge]\x1b[0m\r\n');
-        };
-
-        socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.message) {
-                term.write(data.message);
+        try {
+            logDebug('Initializing Terminal...');
+            if (typeof Terminal === 'undefined') {
+                throw new Error('xterm.js failed to load. Please check your internet connection or CDN availability.');
             }
-        };
-
-        socket.onclose = (event) => {
-            term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
-        };
-
-        socket.onerror = (error) => {
-            term.write('\r\n\x1b[1;31m[WebSocket Error]\x1b[0m\r\n');
-            console.error('WebSocket Error:', error);
-        };
-
-        term.onData((data) => {
-            if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({ data: data }));
+            
+            const term = new Terminal({
+                cursorBlink: true,
+                fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                fontSize: 14,
+                scrollback: 10000, // 允许向上滚动 10000 行
+                theme: {
+                    background: '#000000'
+                }
+            });
+            
+            logDebug('Terminal initialized.');
+            
+            if (typeof FitAddon === 'undefined') {
+                logDebug('Warning: FitAddon not loaded, terminal may not resize correctly.');
+            } else {
+                const fitAddon = new FitAddon.FitAddon();
+                term.loadAddon(fitAddon);
+                window.fitAddon = fitAddon; // 挂载到全局方便调试
             }
-        });
 
-        window.addEventListener('resize', () => {
-            fitAddon.fit();
-        });
+            const container = document.getElementById('terminal-container');
+            if (!container) {
+                throw new Error('Terminal container element not found!');
+            }
+            
+            term.open(container);
+            logDebug('Terminal opened in container.');
+            if (window.fitAddon) window.fitAddon.fit();
 
-        // 初始 fit
-        setTimeout(() => fitAddon.fit(), 100);
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
+            
+            const params = new URLSearchParams();
+            const rawUser = '{{ ssh_username|escapejs }}';
+            const rawPass = '{{ ssh_password|escapejs }}';
+            
+            if (rawUser) params.append('username', rawUser);
+            if (rawPass) params.append('password', rawPass);
+            
+            // 添加终端初始大小
+            params.append('rows', term.rows);
+            params.append('cols', term.cols);
+            
+            const queryString = params.toString();
+            if (queryString) {
+                wsUrl += '?' + queryString;
+            }
+
+            logDebug('Connecting to WebSocket: ' + wsUrl);
+            const socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                logDebug('WebSocket connection opened.');
+                term.write('\x1b[1;32m[Connected to NetBox Web SSH Bridge]\x1b[0m\r\n');
+                
+                // 发送初始终端大小
+                if (window.fitAddon) {
+                    window.fitAddon.fit();
+                    socket.send(JSON.stringify({
+                        resize: {
+                            rows: term.rows,
+                            cols: term.cols
+                        }
+                    }));
+                    logDebug('Sent initial terminal size: ' + term.cols + 'x' + term.rows);
+                }
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.message) {
+                        term.write(data.message);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse WebSocket message:', e);
+                }
+            };
+
+            socket.onclose = (event) => {
+                logDebug('WebSocket connection closed (Code: ' + event.code + ').', true);
+                term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
+            };
+
+            socket.onerror = (error) => {
+                logDebug('WebSocket Error. Check Nginx proxy_set_header settings.', true);
+                term.write('\r\n\x1b[1;31m[WebSocket Error]\x1b[0m\r\n');
+            };
+
+            term.onData((data) => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ data: data }));
+                }
+            });
+
+            window.addEventListener('resize', () => {
+                if (window.fitAddon) {
+                    window.fitAddon.fit();
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({
+                            resize: {
+                                rows: term.rows,
+                                cols: term.cols
+                            }
+                        }));
+                    }
+                }
+            });
+
+            setTimeout(() => {
+                if (window.fitAddon) window.fitAddon.fit();
+            }, 500);
+
+        } catch (err) {
+            logDebug('Critical JS Error: ' + err.message, true);
+            console.error(err);
+        }
     });
 </script>
 {% endif %}
