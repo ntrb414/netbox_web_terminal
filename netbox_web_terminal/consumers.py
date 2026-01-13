@@ -110,6 +110,16 @@ class TerminalConsumer(WebsocketConsumer):
             self.close()
 
     def send_message(self, message):
-        self.send(text_data=json.dumps({
-            'message': message
-        }))
+        # 尝试发送二进制数据，这对于处理复杂的终端转义序列和编码更稳健
+        if isinstance(message, str):
+            try:
+                # 优先以二进制形式发送原始数据
+                self.send(bytes_data=message.encode('utf-8'))
+            except Exception:
+                # 回退到 JSON 包装的文本（用于错误提示等）
+                self.send(text_data=json.dumps({
+                    'message': message
+                }))
+        else:
+            # message 已经是 bytes
+            self.send(bytes_data=message)

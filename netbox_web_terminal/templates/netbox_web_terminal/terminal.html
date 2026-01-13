@@ -20,21 +20,15 @@
     #terminal-container {
         flex-grow: 1;
         background-color: #000;
-        padding: 0;
+        padding: 10px; /* 在容器层设置内边距，不影响 xterm 内部计算 */
         margin: 0;
         overflow: hidden; 
         position: relative;
     }
 
-    /* 强制 xterm 填满父容器并启用内部滚动 */
+    /* 移除对 xterm 内部结构的强制干预，让 xterm.js 自行管理 */
     .xterm {
-        padding: 15px;
-        height: 100% !important;
-    }
-
-    .xterm .xterm-viewport {
-        overflow-y: auto !important; /* 启用独立滚动条 */
-        height: 100% !important;
+        height: 100%;
     }
 
     /* 自定义滚动条样式，使其在深色背景下清晰可见 */
@@ -148,7 +142,16 @@
             
             term.open(container);
             logDebug('Terminal opened in container.');
-            if (window.fitAddon) window.fitAddon.fit();
+            
+            // 确保字体加载后再进行 fit，否则列数计算会出错
+            if (document.fonts) {
+                document.fonts.ready.then(() => {
+                    if (window.fitAddon) {
+                        window.fitAddon.fit();
+                        logDebug('Fonts loaded, terminal resized: ' + term.cols + 'x' + term.rows);
+                    }
+                });
+            }
 
             const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
             let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
@@ -160,7 +163,7 @@
             if (rawUser) params.append('username', rawUser);
             if (rawPass) params.append('password', rawPass);
             
-            // 添加终端初始大小
+            // 初始参数使用当前计算值
             params.append('rows', term.rows);
             params.append('cols', term.cols);
             
@@ -171,12 +174,13 @@
 
             logDebug('Connecting to WebSocket: ' + wsUrl);
             const socket = new WebSocket(wsUrl);
+            socket.binaryType = 'arraybuffer'; // 使用二进制传输以获得更好的兼容性
 
             socket.onopen = () => {
                 logDebug('WebSocket connection opened.');
                 term.write('\x1b[1;32m[Connected to NetBox Web SSH Bridge]\x1b[0m\r\n');
                 
-                // 发送初始终端大小
+                // 再次确保同步一次尺寸
                 if (window.fitAddon) {
                     window.fitAddon.fit();
                     socket.send(JSON.stringify({
@@ -185,18 +189,24 @@
                             cols: term.cols
                         }
                     }));
-                    logDebug('Sent initial terminal size: ' + term.cols + 'x' + term.rows);
                 }
             };
 
             socket.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.message) {
-                        term.write(data.message);
+                if (typeof event.data === 'string') {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.message) {
+                            term.write(data.message);
+                        }
+                    } catch (e) {
+                        term.write(event.data);
                     }
-                } catch (e) {
-                    console.error('Failed to parse WebSocket message:', e);
+                } else {
+                    // 处理二进制数据
+                    const decoder = new TextDecoder('utf-8');
+                    const text = decoder.decode(event.data);
+                    term.write(text);
                 }
             };
 
@@ -216,22 +226,30 @@
                 }
             });
 
-            window.addEventListener('resize', () => {
-                if (window.fitAddon) {
-                    window.fitAddon.fit();
-                    if (socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({
-                            resize: {
-                                rows: term.rows,
-                                cols: term.cols
-                            }
-                        }));
-                    }
+            // 监听 xterm 内部的 resize 事件，这比监听 window 的 resize 更准确
+            term.onResize((size) => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({
+                        resize: {
+                            cols: size.cols,
+                            rows: size.rows
+                        }
+                    }));
+                    logDebug('Terminal resized to: ' + size.cols + 'x' + size.rows);
                 }
             });
 
+            window.addEventListener('resize', () => {
+                if (window.fitAddon) {
+                    window.fitAddon.fit();
+                }
+            });
+
+            // 延迟一会再次 fit，确保 DOM 渲染完成
             setTimeout(() => {
-                if (window.fitAddon) window.fitAddon.fit();
+                if (window.fitAddon) {
+                    window.fitAddon.fit();
+                }
             }, 500);
 
         } catch (err) {
