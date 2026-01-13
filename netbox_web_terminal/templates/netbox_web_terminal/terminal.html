@@ -6,77 +6,94 @@
 {% block extra_styles %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
 <style>
-    /* 核心布局：固定 3/4 屏幕高度，居中显示 */
+    /* 核心布局优化 */
     #terminal-card-body {
-        height: 75vh; /* 占据界面的 3/4 高度 */
+        height: 75vh;
         background-color: #000;
         display: flex;
         flex-direction: column;
-        overflow: hidden !important;
+        overflow: hidden; 
         padding: 0 !important;
         border-radius: 0 0 4px 4px;
     }
 
+    /* 调试信息栏 - 紧凑型设计 */
+    #debug-info {
+        background-color: #222;
+        color: #aaa !important;
+        font-size: 11px;
+        padding: 2px 10px;
+        border-bottom: 1px solid #333;
+        flex-shrink: 0;
+    }
+
     #terminal-container {
-        flex-grow: 1;
+        flex: 1;
+        width: 100%;
         background-color: #000;
-        padding: 0;
         margin: 0;
-        overflow: hidden; 
+        padding: 0;
+        overflow: hidden;
         position: relative;
     }
 
-    /* 移除对 xterm 内部结构的强制干预，让 xterm.js 自行管理 */
+    /* 强制填满容器 */
     .xterm {
-        height: 100%;
+        position: absolute !important;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 4px;
     }
 
-    /* 自定义滚动条样式，使其在深色背景下清晰可见 */
+    .xterm .xterm-viewport {
+        overflow-y: auto !important;
+        background-color: #000 !important;
+    }
+
+    /* 滚动条美化 */
     .xterm .xterm-viewport::-webkit-scrollbar {
-        width: 12px !important;
-        display: block !important;
+        width: 8px;
     }
     .xterm .xterm-viewport::-webkit-scrollbar-track {
-        background: #000 !important;
-        border-left: 1px solid #222;
+        background: #000;
     }
     .xterm .xterm-viewport::-webkit-scrollbar-thumb {
-        background: #333 !important;
-        border: 2px solid #000;
-        border-radius: 6px;
+        background: #333;
+        border-radius: 4px;
     }
     .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
-        background: #555 !important;
+        background: #444;
     }
 
-    /* 修正 NetBox 默认 card 样式，防止溢出 */
     .card {
         margin-bottom: 20px;
-        overflow: hidden;
+        border: none;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
     }
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col col-12 col-lg-9"> <!-- 占据界面的 3/4 宽度 (col-9/12) -->
+    <div class="col col-12 col-lg-11">
         <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
+            <div class="card-header d-flex justify-content-between align-items-center bg-dark text-white">
                 <div>
-                    <strong>Terminal: {{ device }}</strong>
+                    <i class="mdi mdi-console"></i>
+                    <strong class="ms-2">{{ device }}</strong>
                     {% if device_ip %}
-                    <span class="badge bg-info ms-2">{{ device_ip }}</span>
+                    <small class="text-muted ms-2">({{ device_ip }})</small>
                     {% endif %}
                 </div>
-                <div>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="location.reload();">
-                        <i class="mdi mdi-refresh"></i> Reconnect
-                    </button>
-                </div>
+                <button class="btn btn-sm btn-outline-light" onclick="location.reload();">
+                    <i class="mdi mdi-refresh"></i> Reconnect
+                </button>
             </div>
             <div id="terminal-card-body" class="card-body">
-                <div id="debug-info" class="p-2 small text-muted bg-light border-bottom" style="display: none; color: #333 !important;">
-                    <strong>Debug:</strong> <span id="debug-status">Initializing...</span>
+                <div id="debug-info" style="display: none;">
+                    <strong>Status:</strong> <span id="debug-status text-info">Connecting...</span>
                 </div>
                 <div id="terminal-container"></div>
             </div>
@@ -91,189 +108,149 @@
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.7.0/lib/xterm-addon-fit.js"></script>
 
 <script>
-    // 立即执行一次，确保 debug 能够显示
-    (function() {
-        console.log('Script loaded, waiting for DOM...');
-    })();
-
     document.addEventListener('DOMContentLoaded', function() {
         const debugInfo = document.getElementById('debug-info');
         const debugStatus = document.getElementById('debug-status');
         
         function logDebug(msg, isError = false) {
-            console.log('[Terminal Debug] ' + msg);
+            console.log('[SSH] ' + msg);
             if (debugInfo && debugStatus) {
                 debugInfo.style.display = 'block';
-                debugStatus.innerHTML = msg;
-                if (isError) debugStatus.className = 'text-danger';
+                debugStatus.textContent = msg;
+                debugStatus.className = isError ? 'text-danger' : 'text-info';
             }
         }
 
-        try {
-            logDebug('Initializing Terminal...');
-            if (typeof Terminal === 'undefined') {
-                throw new Error('xterm.js failed to load. Please check your internet connection or CDN availability.');
-            }
-            
-            const term = new Terminal({
-                cursorBlink: true,
-                fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-                fontSize: 14,
-                scrollback: 10000, // 允许向上滚动 10000 行
-                convertEol: true,
-                theme: {
-                    background: '#000000'
-                }
-            });
-            
-            logDebug('Terminal initialized.');
-            
-            if (typeof FitAddon === 'undefined') {
-                logDebug('Warning: FitAddon not loaded, terminal may not resize correctly.');
-            } else {
+        async function initTerminal() {
+            try {
+                const term = new Terminal({
+                    cursorBlink: true,
+                    fontFamily: 'Consolas, "Liberation Mono", Menlo, Courier, monospace',
+                    fontSize: 14,
+                    scrollback: 5000,
+                    convertEol: true,
+                    theme: {
+                        background: '#000000',
+                        foreground: '#ffffff',
+                        cursor: '#ffffff'
+                    },
+                    allowProposedApi: true
+                });
+                
                 const fitAddon = new FitAddon.FitAddon();
                 term.loadAddon(fitAddon);
-                window.fitAddon = fitAddon; // 挂载到全局方便调试
-            }
 
-            const container = document.getElementById('terminal-container');
-            if (!container) {
-                throw new Error('Terminal container element not found!');
-            }
-            
-            term.open(container);
-            logDebug('Terminal opened in container.');
-            
-            // 确保字体加载后再进行 fit，否则列数计算会出错
-            if (document.fonts) {
-                document.fonts.ready.then(() => {
-                    if (window.fitAddon) {
-                        window.fitAddon.fit();
-                        logDebug('Fonts loaded, terminal resized: ' + term.cols + 'x' + term.rows);
+                const container = document.getElementById('terminal-container');
+                term.open(container);
+                
+                // 解决渲染延迟导致的尺寸计算偏差
+                if (document.fonts) {
+                    await document.fonts.ready;
+                }
+
+                // 初始适应尺寸
+                const performFit = () => {
+                    try {
+                        fitAddon.fit();
+                        console.log(`Resized to: ${term.cols}x${term.rows}`);
+                    } catch (e) {
+                        console.warn('Fit failed:', e);
+                    }
+                };
+
+                performFit();
+
+                // 使用 ResizeObserver 监听容器变化，这是最可靠的自适应方式
+                const resizeObserver = new ResizeObserver(() => {
+                    performFit();
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({
+                            resize: { cols: term.cols, rows: term.rows }
+                        }));
                     }
                 });
-            }
-            // 字体 API 不可用或过慢时，立即进行一次 fit 作为兜底
-            if (window.fitAddon) {
-                window.fitAddon.fit();
-            }
+                resizeObserver.observe(container);
 
-            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-            let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
-            
-            const params = new URLSearchParams();
-            const rawUser = '{{ ssh_username|escapejs }}';
-            const rawPass = '{{ ssh_password|escapejs }}';
-            
-            if (rawUser) params.append('username', rawUser);
-            if (rawPass) params.append('password', rawPass);
-            
-            // 初始参数使用当前计算值
-            params.append('rows', term.rows);
-            params.append('cols', term.cols);
-            
-            const queryString = params.toString();
-            if (queryString) {
-                wsUrl += '?' + queryString;
-            }
-
-            logDebug('Connecting to WebSocket: ' + wsUrl);
-            const socket = new WebSocket(wsUrl);
-            socket.binaryType = 'arraybuffer'; // 使用二进制传输以获得更好的兼容性
-
-            socket.onopen = () => {
-                logDebug('WebSocket connection opened.');
-                term.write('\x1b[1;32m[Connected to NetBox Web SSH Bridge]\x1b[0m\r\n');
+                const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+                let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
                 
-                // 再次确保同步一次尺寸
-                if (window.fitAddon) {
-                    window.fitAddon.fit();
+                const params = new URLSearchParams();
+                const rawUser = '{{ ssh_username|escapejs }}';
+                const rawPass = '{{ ssh_password|escapejs }}';
+                if (rawUser) params.append('username', rawUser);
+                if (rawPass) params.append('password', rawPass);
+                
+                // 传初始尺寸
+                params.append('rows', term.rows);
+                params.append('cols', term.cols);
+                
+                const queryString = params.toString();
+                if (queryString) wsUrl += '?' + queryString;
+
+                const socket = new WebSocket(wsUrl);
+                socket.binaryType = 'arraybuffer';
+
+                socket.onopen = () => {
+                    logDebug('Connected');
+                    term.focus();
+                    // 连接瞬间再次确认尺寸
+                    performFit();
                     socket.send(JSON.stringify({
-                        resize: {
-                            rows: term.rows,
-                            cols: term.cols
-                        }
+                        resize: { rows: term.rows, cols: term.cols }
                     }));
-                }
-            };
+                };
 
-            socket.onmessage = async (event) => {
-                if (typeof event.data === 'string') {
-                    try {
-                        const data = JSON.parse(event.data);
-                        if (data.message) {
-                            term.write(data.message);
+                socket.onmessage = async (event) => {
+                    let text = '';
+                    if (typeof event.data === 'string') {
+                        try {
+                            const data = JSON.parse(event.data);
+                            text = data.message || event.data;
+                        } catch (e) {
+                            text = event.data;
                         }
-                    } catch (e) {
-                        term.write(event.data);
+                    } else {
+                        const buffer = event.data instanceof ArrayBuffer ? event.data : await event.data.arrayBuffer();
+                        text = new TextDecoder('utf-8').decode(buffer);
                     }
-                } else {
-                    // 处理二进制数据：兼容 ArrayBuffer 与 Blob
-                    try {
-                        let buffer;
-                        if (event.data instanceof ArrayBuffer) {
-                            buffer = event.data;
-                        } else if (event.data instanceof Blob) {
-                            buffer = await event.data.arrayBuffer();
-                        } else {
-                            // 不识别的类型，直接忽略
-                            return;
-                        }
-                        const decoder = new TextDecoder('utf-8');
-                        const text = decoder.decode(buffer);
-                        term.write(text);
-                    } catch (e) {
-                        console.error('Binary message decode error:', e);
+                    
+                    term.write(text);
+                    
+                    // 只有当输出导致内容增加时才尝试滚动
+                    if (term.buffer.active.baseY > 0) {
+                        term.scrollToBottom();
                     }
-                }
-            };
+                };
 
-            socket.onclose = (event) => {
-                logDebug('WebSocket connection closed (Code: ' + event.code + ').', true);
-                term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
-            };
+                socket.onclose = () => {
+                    logDebug('Disconnected', true);
+                    term.write('\r\n\x1b[1;31m[Connection Closed]\x1b[0m\r\n');
+                    resizeObserver.disconnect();
+                };
 
-            socket.onerror = (error) => {
-                logDebug('WebSocket Error. Check Nginx proxy_set_header settings.', true);
-                term.write('\r\n\x1b[1;31m[WebSocket Error]\x1b[0m\r\n');
-            };
+                socket.onerror = () => {
+                    logDebug('Network Error', true);
+                    term.write('\r\n\x1b[1;31m[Connection Error]\x1b[0m\r\n');
+                };
 
-            term.onData((data) => {
-                if (socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify({ data: data }));
-                }
-            });
+                term.onData((data) => {
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({ data: data }));
+                    }
+                });
 
-            // 监听 xterm 内部的 resize 事件，这比监听 window 的 resize 更准确
-            term.onResize((size) => {
-                if (socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify({
-                        resize: {
-                            cols: size.cols,
-                            rows: size.rows
-                        }
-                    }));
-                    logDebug('Terminal resized to: ' + size.cols + 'x' + size.rows);
-                }
-            });
+                // 清理函数
+                window.addEventListener('beforeunload', () => {
+                    if (socket) socket.close();
+                    resizeObserver.disconnect();
+                });
 
-            window.addEventListener('resize', () => {
-                if (window.fitAddon) {
-                    window.fitAddon.fit();
-                }
-            });
-
-            // 延迟一会再次 fit，确保 DOM 渲染完成
-            setTimeout(() => {
-                if (window.fitAddon) {
-                    window.fitAddon.fit();
-                }
-            }, 500);
-
-        } catch (err) {
-            logDebug('Critical JS Error: ' + err.message, true);
-            console.error(err);
+            } catch (err) {
+                logDebug('System Error: ' + err.message, true);
+            }
         }
+
+        initTerminal();
     });
 </script>
 {% endif %}
