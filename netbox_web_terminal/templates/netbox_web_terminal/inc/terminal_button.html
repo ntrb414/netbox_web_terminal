@@ -1,3 +1,31 @@
-<a href="{% url 'plugins:netbox_web_terminal:device_terminal' pk=device.pk %}" class="btn btn-sm btn-warning" target="_blank">
-    <i class="mdi mdi-console"></i> Terminal
-</a>
+<button type="button" class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#web-terminal-modal">
+    <i class="mdi mdi-console"></i> Web Terminal
+</button>
+
+<div class="modal fade" id="web-terminal-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <form method="get" action="{% url 'plugins:netbox_web_terminal:device_terminal' pk=device.pk %}" target="_blank">
+                <div class="modal-header">
+                    <h5 class="modal-title">SSH 登录凭据</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">留空将使用系统默认配置的用户名和密码。</p>
+                    <div class="mb-3">
+                        <label class="form-label">SSH 用户名</label>
+                        <input type="text" name="ssh_username" class="form-control" placeholder="默认 (admin)">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">SSH 密码</label>
+                        <input type="password" name="ssh_password" class="form-control" placeholder="默认密码">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="submit" class="btn btn-primary">连接设备</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>

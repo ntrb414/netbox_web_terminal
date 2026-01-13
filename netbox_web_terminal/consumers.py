@@ -27,10 +27,21 @@ class TerminalConsumer(WebsocketConsumer):
 
             self.host = str(ip_obj.address.ip)
             
-            # 从插件配置获取默认凭据 (生产环境建议使用加密存储或动态输入)
+            # 1. 获取插件默认配置
             plugin_config = settings.PLUGINS_CONFIG.get('netbox_web_terminal', {})
-            self.username = plugin_config.get('ssh_username', 'admin')
-            self.password = plugin_config.get('ssh_password', '')
+            default_username = plugin_config.get('ssh_username', 'admin')
+            default_password = plugin_config.get('ssh_password', '')
+
+            # 2. 从 WebSocket 查询参数中获取用户输入的凭据
+            from urllib.parse import parse_qs
+            query_params = parse_qs(self.scope['query_string'].decode())
+            
+            # 如果用户在弹窗中输入了内容，则使用输入值；否则使用默认值
+            user_input_name = query_params.get('username', [None])[0]
+            user_input_pass = query_params.get('password', [None])[0]
+
+            self.username = user_input_name if user_input_name else default_username
+            self.password = user_input_pass if user_input_pass else default_password
 
             # 启动 SSH 线程
             self.ssh_client = paramiko.SSHClient()

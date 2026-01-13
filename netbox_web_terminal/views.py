@@ -18,7 +18,13 @@ class DeviceTerminalView(PermissionRequiredMixin, View):
 
         ip = str(ip_obj.address.ip)
         
+        # 获取表单提交的用户名和密码
+        ssh_username = request.GET.get('ssh_username', '').strip()
+        ssh_password = request.GET.get('ssh_password', '').strip()
+        
         return render(request, 'netbox_web_terminal/terminal.html', {
             'device': device,
             'device_ip': ip,
+            'ssh_username': ssh_username,
+            'ssh_password': ssh_password,
         })

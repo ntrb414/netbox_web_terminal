@@ -1,73 +1,128 @@
 {% extends 'base/layout.html' %}
+{% load static %}
+
+{% block title %}Terminal - {{ device }}{% endblock %}
+
+{% block extra_styles %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
+<style>
+    #terminal-container {
+        height: 70vh;
+        background-color: #000;
+        padding: 10px;
+        border-radius: 0 0 4px 4px;
+    }
+    .xterm .xterm-viewport {
+        overflow-y: auto;
+    }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="row">
-    <div class="col-md-12">
+    <div class="col col-md-12">
         <div class="card">
-            <div class="card-header">
-                <strong>SSH 终端: {{ device.name }} ({{ device_ip }})</strong>
-                <div class="float-end">
-                    <span id="status" class="badge bg-secondary">正在初始化...</span>
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>Terminal: {{ device }}</strong>
+                    {% if device_ip %}
+                    <span class="badge bg-info ms-2">{{ device_ip }}</span>
+                    {% endif %}
+                </div>
+                <div>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="location.reload();">
+                        <i class="mdi mdi-refresh"></i> Reconnect
+                    </button>
                 </div>
             </div>
-            <div class="card-body bg-dark p-0">
-                <div id="terminal" style="height: 600px;"></div>
+            <div class="card-body p-0">
+                {% if error %}
+                <div class="alert alert-danger m-3">
+                    {{ error }}
+                </div>
+                {% else %}
+                <div id="terminal-container"></div>
+                {% endif %}
             </div>
         </div>
     </div>
 </div>
+{% endblock %}
 
-<!-- xterm.js -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
+{% block extra_scripts %}
+{% if not error %}
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.1.0/lib/xterm.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.7.0/lib/xterm-addon-fit.js"></script>
 
 <script>
-    const term = new Terminal({
-        cursorBlink: true,
-        theme: {
-            background: '#1a1a1a'
-        }
-    });
-    const fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(document.getElementById('terminal'));
-    fitAddon.fit();
+    document.addEventListener('DOMContentLoaded', function() {
+        const term = new Terminal({
+            cursorBlink: true,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            fontSize: 14,
+            theme: {
+                background: '#000000'
+            }
+        });
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
 
-    const statusLabel = document.getElementById('status');
-    
-    // WebSocket 连接
-    const ws_scheme = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws_path = ws_scheme + "://" + window.location.host + "/ws/terminal/{{ device.pk }}/";
-    const socket = new WebSocket(ws_path);
-
-    socket.onopen = function(e) {
-        statusLabel.className = 'badge bg-success';
-        statusLabel.innerText = '已连接';
-        term.focus();
-    };
-
-    socket.onmessage = function(e) {
-        const data = JSON.parse(e.data);
-        if (data.message) {
-            term.write(data.message);
-        }
-    };
-
-    socket.onclose = function(e) {
-        statusLabel.className = 'badge bg-danger';
-        statusLabel.innerText = '已断开';
-        term.write('\r\n连接已关闭\r\n');
-    };
-
-    term.onData(data => {
-        socket.send(JSON.stringify({
-            'data': data
-        }));
-    });
-
-    window.onresize = function() {
+        const container = document.getElementById('terminal-container');
+        term.open(container);
         fitAddon.fit();
-    };
+
+        const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+        
+        // 构造带凭据参数的 WebSocket URL
+        let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
+        const params = new URLSearchParams();
+        {% if ssh_username %}
+        params.append('username', '{{ ssh_username|escapejs }}');
+        {% endif %}
+        {% if ssh_password %}
+        params.append('password', '{{ ssh_password|escapejs }}');
+        {% endif %}
+        
+        const queryString = params.toString();
+        if (queryString) {
+            wsUrl += '?' + queryString;
+        }
+
+        const socket = new WebSocket(wsUrl);
+
+        socket.onopen = () => {
+            term.write('\x1b[1;32m[Connected to NetBox Web SSH Bridge]\x1b[0m\r\n');
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.message) {
+                term.write(data.message);
+            }
+        };
+
+        socket.onclose = (event) => {
+            term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
+        };
+
+        socket.onerror = (error) => {
+            term.write('\r\n\x1b[1;31m[WebSocket Error]\x1b[0m\r\n');
+            console.error('WebSocket Error:', error);
+        };
+
+        term.onData((data) => {
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ data: data }));
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+        });
+
+        // 初始 fit
+        setTimeout(() => fitAddon.fit(), 100);
+    });
 </script>
+{% endif %}
 {% endblock %}
