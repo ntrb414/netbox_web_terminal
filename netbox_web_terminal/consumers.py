@@ -98,28 +98,20 @@ class TerminalConsumer(WebsocketConsumer):
     def receive_ssh(self):
         try:
             while True:
-                # 阻塞式读取，更高效
-                data = self.channel.recv(4096)
+                # 阻塞式读取原始字节流
+                data = self.channel.recv(8192)
                 if not data:
                     break
-                # 解码并发送
-                self.send_message(data.decode('utf-8', errors='ignore'))
+                # 直接以二进制形式发送，不进行任何中间解码
+                self.send(bytes_data=data)
         except Exception:
             pass
         finally:
             self.close()
 
     def send_message(self, message):
-        # 尝试发送二进制数据，这对于处理复杂的终端转义序列和编码更稳健
+        # 仅用于发送文本提示消息
         if isinstance(message, str):
-            try:
-                # 优先以二进制形式发送原始数据
-                self.send(bytes_data=message.encode('utf-8'))
-            except Exception:
-                # 回退到 JSON 包装的文本（用于错误提示等）
-                self.send(text_data=json.dumps({
-                    'message': message
-                }))
+            self.send(text_data=json.dumps({'message': message}))
         else:
-            # message 已经是 bytes
             self.send(bytes_data=message)
