@@ -20,16 +20,15 @@
     #terminal-container {
         flex-grow: 1;
         background-color: #000;
-        padding: 0; /* 彻底移除所有内边距，确保 fit 计算 100% 准确 */
+        padding: 0;
         margin: 0;
         overflow: hidden; 
         position: relative;
     }
 
-    /* 移除所有干扰 xterm 渲染的样式 */
+    /* 移除对 xterm 内部结构的强制干预，让 xterm.js 自行管理 */
     .xterm {
         height: 100%;
-        padding: 0;
     }
 
     /* 自定义滚动条样式，使其在深色背景下清晰可见 */
@@ -121,6 +120,7 @@
                 fontFamily: 'Menlo, Monaco, "Courier New", monospace',
                 fontSize: 14,
                 scrollback: 10000, // 允许向上滚动 10000 行
+                convertEol: true,
                 theme: {
                     background: '#000000'
                 }
@@ -144,91 +144,131 @@
             term.open(container);
             logDebug('Terminal opened in container.');
             
-            // 封装连接逻辑
-            function connect() {
-                const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-                let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
-                
-                const params = new URLSearchParams();
-                const rawUser = '{{ ssh_username|escapejs }}';
-                const rawPass = '{{ ssh_password|escapejs }}';
-                
-                if (rawUser) params.append('username', rawUser);
-                if (rawPass) params.append('password', rawPass);
-                
-                // 确保发送的是 fit 之后的准确行列数
-                params.append('rows', term.rows);
-                params.append('cols', term.cols);
-                
-                const queryString = params.toString();
-                if (queryString) wsUrl += '?' + queryString;
-
-                logDebug('Connecting with size: ' + term.cols + 'x' + term.rows);
-                const socket = new WebSocket(wsUrl);
-                socket.binaryType = 'arraybuffer';
-
-                socket.onopen = () => {
-                    logDebug('WebSocket connection opened.');
-                    term.write('\x1b[1;32m[Connected to NetBox Web SSH Bridge]\x1b[0m\r\n');
-                };
-
-                socket.onmessage = (event) => {
-                    if (typeof event.data === 'string') {
-                        try {
-                            const data = JSON.parse(event.data);
-                            if (data.message) term.write(data.message);
-                        } catch (e) {
-                            term.write(event.data);
-                        }
-                    } else {
-                        const decoder = new TextDecoder('utf-8');
-                        term.write(decoder.decode(event.data));
-                    }
-                };
-
-                socket.onclose = (event) => {
-                    logDebug('WebSocket closed (Code: ' + event.code + ').', true);
-                    term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
-                };
-
-                socket.onerror = () => {
-                    logDebug('WebSocket Error.', true);
-                    term.write('\r\n\x1b[1;31m[WebSocket Error]\x1b[0m\r\n');
-                };
-
-                term.onData((data) => {
-                    if (socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({ data: data }));
-                    }
-                });
-
-                term.onResize((size) => {
-                    if (socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({
-                            resize: { cols: size.cols, rows: size.rows }
-                        }));
-                    }
-                });
-
-                window.addEventListener('resize', () => {
-                    if (window.fitAddon) window.fitAddon.fit();
-                });
-            }
-
-            // 流程控制：先计算尺寸，再启动连接
+            // 确保字体加载后再进行 fit，否则列数计算会出错
             if (document.fonts) {
                 document.fonts.ready.then(() => {
-                    setTimeout(() => {
-                        if (window.fitAddon) window.fitAddon.fit();
-                        connect();
-                    }, 100); // 给 DOM 渲染留一点时间
+                    if (window.fitAddon) {
+                        window.fitAddon.fit();
+                        logDebug('Fonts loaded, terminal resized: ' + term.cols + 'x' + term.rows);
+                    }
                 });
-            } else {
-                setTimeout(() => {
-                    if (window.fitAddon) window.fitAddon.fit();
-                    connect();
-                }, 200);
             }
+            // 字体 API 不可用或过慢时，立即进行一次 fit 作为兜底
+            if (window.fitAddon) {
+                window.fitAddon.fit();
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
+            
+            const params = new URLSearchParams();
+            const rawUser = '{{ ssh_username|escapejs }}';
+            const rawPass = '{{ ssh_password|escapejs }}';
+            
+            if (rawUser) params.append('username', rawUser);
+            if (rawPass) params.append('password', rawPass);
+            
+            // 初始参数使用当前计算值
+            params.append('rows', term.rows);
+            params.append('cols', term.cols);
+            
+            const queryString = params.toString();
+            if (queryString) {
+                wsUrl += '?' + queryString;
+            }
+
+            logDebug('Connecting to WebSocket: ' + wsUrl);
+            const socket = new WebSocket(wsUrl);
+            socket.binaryType = 'arraybuffer'; // 使用二进制传输以获得更好的兼容性
+
+            socket.onopen = () => {
+                logDebug('WebSocket connection opened.');
+                term.write('\x1b[1;32m[Connected to NetBox Web SSH Bridge]\x1b[0m\r\n');
+                
+                // 再次确保同步一次尺寸
+                if (window.fitAddon) {
+                    window.fitAddon.fit();
+                    socket.send(JSON.stringify({
+                        resize: {
+                            rows: term.rows,
+                            cols: term.cols
+                        }
+                    }));
+                }
+            };
+
+            socket.onmessage = async (event) => {
+                if (typeof event.data === 'string') {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.message) {
+                            term.write(data.message);
+                        }
+                    } catch (e) {
+                        term.write(event.data);
+                    }
+                } else {
+                    // 处理二进制数据：兼容 ArrayBuffer 与 Blob
+                    try {
+                        let buffer;
+                        if (event.data instanceof ArrayBuffer) {
+                            buffer = event.data;
+                        } else if (event.data instanceof Blob) {
+                            buffer = await event.data.arrayBuffer();
+                        } else {
+                            // 不识别的类型，直接忽略
+                            return;
+                        }
+                        const decoder = new TextDecoder('utf-8');
+                        const text = decoder.decode(buffer);
+                        term.write(text);
+                    } catch (e) {
+                        console.error('Binary message decode error:', e);
+                    }
+                }
+            };
+
+            socket.onclose = (event) => {
+                logDebug('WebSocket connection closed (Code: ' + event.code + ').', true);
+                term.write('\r\n\x1b[1;31m[Connection closed]\x1b[0m\r\n');
+            };
+
+            socket.onerror = (error) => {
+                logDebug('WebSocket Error. Check Nginx proxy_set_header settings.', true);
+                term.write('\r\n\x1b[1;31m[WebSocket Error]\x1b[0m\r\n');
+            };
+
+            term.onData((data) => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ data: data }));
+                }
+            });
+
+            // 监听 xterm 内部的 resize 事件，这比监听 window 的 resize 更准确
+            term.onResize((size) => {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({
+                        resize: {
+                            cols: size.cols,
+                            rows: size.rows
+                        }
+                    }));
+                    logDebug('Terminal resized to: ' + size.cols + 'x' + size.rows);
+                }
+            });
+
+            window.addEventListener('resize', () => {
+                if (window.fitAddon) {
+                    window.fitAddon.fit();
+                }
+            });
+
+            // 延迟一会再次 fit，确保 DOM 渲染完成
+            setTimeout(() => {
+                if (window.fitAddon) {
+                    window.fitAddon.fit();
+                }
+            }, 500);
 
         } catch (err) {
             logDebug('Critical JS Error: ' + err.message, true);
