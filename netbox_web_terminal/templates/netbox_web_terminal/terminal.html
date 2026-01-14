@@ -143,12 +143,18 @@
                 const container = document.getElementById('terminal-container');
                 term.open(container);
                 
-                // 解决渲染延迟导致的尺寸计算偏差
+                let userScrolledUp = false;
+                term.onScroll(() => {
+                    userScrolledUp = term.buffer.active.viewportY > 0;
+                });
+                
                 if (document.fonts) {
                     await document.fonts.ready;
                 }
+                
+                await new Promise(resolve => requestAnimationFrame(resolve));
+                await new Promise(resolve => setTimeout(resolve, 50));
 
-                // 初始适应尺寸
                 const performFit = () => {
                     try {
                         fitAddon.fit();
@@ -216,8 +222,7 @@
                     
                     term.write(text);
                     
-                    // 只有当输出导致内容增加时才尝试滚动
-                    if (term.buffer.active.baseY > 0) {
+                    if (!userScrolledUp) {
                         term.scrollToBottom();
                     }
                 };
