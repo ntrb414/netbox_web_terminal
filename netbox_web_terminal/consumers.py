@@ -61,7 +61,9 @@ class TerminalConsumer(WebsocketConsumer):
                     username=self.username,
                     password=self.password,
                     look_for_keys=False,
-                    timeout=10
+                    timeout=10,
+                    # Enable legacy algorithms for older devices
+                    disabled_algorithms=None
                 )
                 self.channel = self.ssh_client.invoke_shell(
                     term='xterm', 
