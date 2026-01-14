@@ -6,25 +6,59 @@
 {% block extra_styles %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.1.0/css/xterm.css" />
 <style>
-    /* 核心布局优化 */
     #terminal-card-body {
         height: 75vh;
         background-color: #000;
         display: flex;
         flex-direction: column;
-        overflow: hidden; 
+        overflow: hidden;
         padding: 0 !important;
         border-radius: 0 0 4px 4px;
     }
 
-    /* 调试信息栏 - 紧凑型设计 */
-    #debug-info {
-        background-color: #222;
-        color: #aaa !important;
-        font-size: 11px;
-        padding: 2px 10px;
+    #terminal-header {
+        background-color: #1e1e1e;
+        color: #fff;
+        padding: 10px 15px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         border-bottom: 1px solid #333;
         flex-shrink: 0;
+    }
+
+    #terminal-header .device-info {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    #terminal-header .status-badge {
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-size: 11px;
+        font-weight: 500;
+        text-transform: uppercase;
+    }
+
+    #terminal-header .status-badge.connected {
+        background-color: #10b981;
+        color: #fff;
+    }
+
+    #terminal-header .status-badge.connecting {
+        background-color: #f59e0b;
+        color: #fff;
+    }
+
+    #terminal-header .status-badge.disconnected {
+        background-color: #ef4444;
+        color: #fff;
+    }
+
+    #terminal-header .status-badge.error {
+        background-color: #dc2626;
+        color: #fff;
     }
 
     #terminal-container {
@@ -37,7 +71,6 @@
         position: relative;
     }
 
-    /* 强制填满容器 */
     .xterm {
         position: absolute !important;
         top: 0;
@@ -52,25 +85,53 @@
         background-color: #000 !important;
     }
 
-    /* 滚动条美化 */
     .xterm .xterm-viewport::-webkit-scrollbar {
         width: 8px;
     }
+
     .xterm .xterm-viewport::-webkit-scrollbar-track {
         background: #000;
     }
+
     .xterm .xterm-viewport::-webkit-scrollbar-thumb {
         background: #333;
         border-radius: 4px;
     }
+
     .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
         background: #444;
     }
 
-    .card {
-        margin-bottom: 20px;
+    .btn-terminal {
+        padding: 4px 12px;
+        font-size: 12px;
+        border-radius: 4px;
         border: none;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .btn-terminal-reconnect {
+        background-color: #3b82f6;
+        color: #fff;
+    }
+
+    .btn-terminal-reconnect:hover {
+        background-color: #2563eb;
+    }
+
+    .btn-terminal-reconnect:disabled {
+        background-color: #6b7280;
+        cursor: not-allowed;
+    }
+
+    .btn-terminal-close {
+        background-color: #ef4444;
+        color: #fff;
+    }
+
+    .btn-terminal-close:hover {
+        background-color: #dc2626;
     }
 </style>
 {% endblock %}
@@ -79,21 +140,24 @@
 <div class="row justify-content-center">
     <div class="col col-12 col-lg-11">
         <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center bg-dark text-white">
-                <div>
-                    <i class="mdi mdi-console"></i>
-                    <strong class="ms-2">{{ device }}</strong>
-                    {% if device_ip %}
-                    <small class="text-muted ms-2">({{ device_ip }})</small>
-                    {% endif %}
-                </div>
-                <button class="btn btn-sm btn-outline-light" onclick="location.reload();">
-                    <i class="mdi mdi-refresh"></i> Reconnect
-                </button>
-            </div>
             <div id="terminal-card-body" class="card-body">
-                <div id="debug-info" style="display: none;">
-                    <strong>Status:</strong> <span id="debug-status text-info">Connecting...</span>
+                <div id="terminal-header">
+                    <div class="device-info">
+                        <i class="mdi mdi-console"></i>
+                        <strong>{{ device }}</strong>
+                        {% if device_ip %}
+                        <span class="text-muted small">({{ device_ip }})</span>
+                        {% endif %}
+                        <span id="connection-status" class="status-badge disconnected">Disconnected</span>
+                    </div>
+                    <div class="terminal-controls">
+                        <button id="btn-reconnect" class="btn-terminal btn-terminal-reconnect">
+                            <i class="mdi mdi-refresh"></i> Reconnect
+                        </button>
+                        <button id="btn-close" class="btn-terminal btn-terminal-close">
+                            <i class="mdi mdi-close"></i> Close
+                        </button>
+                    </div>
                 </div>
                 <div id="terminal-container"></div>
             </div>
@@ -108,155 +172,328 @@
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.7.0/lib/xterm-addon-fit.js"></script>
 
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const debugInfo = document.getElementById('debug-info');
-        const debugStatus = document.getElementById('debug-status');
-        
-        function logDebug(msg, isError = false) {
-            console.log('[SSH] ' + msg);
-            if (debugInfo && debugStatus) {
-                debugInfo.style.display = 'block';
-                debugStatus.textContent = msg;
-                debugStatus.className = isError ? 'text-danger' : 'text-info';
-            }
+(function() {
+    'use strict';
+
+    class WebTerminal {
+        constructor(deviceId, username, password) {
+            this.deviceId = deviceId;
+            this.username = username;
+            this.password = password;
+            this.socket = null;
+            this.term = null;
+            this.fitAddon = null;
+            this.resizeObserver = null;
+            this.resizeTimeout = null;
+            this.userScrolledUp = false;
+            this.isConnected = false;
+            this.isConnecting = false;
+            this.reconnectAttempts = 0;
+            this.maxReconnectAttempts = 3;
+            this.reconnectDelay = 2000;
+            
+            this.statusElement = document.getElementById('connection-status');
+            this.reconnectBtn = document.getElementById('btn-reconnect');
+            this.closeBtn = document.getElementById('btn-close');
+            
+            this.init();
         }
 
-        async function initTerminal() {
+        async init() {
             try {
-                const term = new Terminal({
-                    cursorBlink: true,
-                    fontFamily: 'Consolas, "Liberation Mono", Menlo, Courier, monospace',
-                    fontSize: 14,
-                    scrollback: 5000,
-                    convertEol: true,
-                    theme: {
-                        background: '#000000',
-                        foreground: '#ffffff',
-                        cursor: '#ffffff'
-                    },
-                    allowProposedApi: true
-                });
-                
-                const fitAddon = new FitAddon.FitAddon();
-                term.loadAddon(fitAddon);
-
-                const container = document.getElementById('terminal-container');
-                term.open(container);
-                
-                let userScrolledUp = false;
-                term.onScroll(() => {
-                    userScrolledUp = term.buffer.active.viewportY > 0;
-                });
-                
-                if (document.fonts) {
-                    await document.fonts.ready;
-                }
-                
-                await new Promise(resolve => requestAnimationFrame(resolve));
-                await new Promise(resolve => setTimeout(resolve, 50));
-
-                const performFit = () => {
-                    try {
-                        fitAddon.fit();
-                        console.log(`Resized to: ${term.cols}x${term.rows}`);
-                    } catch (e) {
-                        console.warn('Fit failed:', e);
-                    }
-                };
-
-                performFit();
-
-                // 使用 ResizeObserver 监听容器变化，这是最可靠的自适应方式
-                const resizeObserver = new ResizeObserver(() => {
-                    performFit();
-                    if (socket && socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({
-                            resize: { cols: term.cols, rows: term.rows }
-                        }));
-                    }
-                });
-                resizeObserver.observe(container);
-
-                const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-                let wsUrl = protocol + window.location.host + '/ws/terminal/{{ device.pk }}/';
-                
-                const params = new URLSearchParams();
-                const rawUser = '{{ ssh_username|escapejs }}';
-                const rawPass = '{{ ssh_password|escapejs }}';
-                if (rawUser) params.append('username', rawUser);
-                if (rawPass) params.append('password', rawPass);
-                
-                // 传初始尺寸
-                params.append('rows', term.rows);
-                params.append('cols', term.cols);
-                
-                const queryString = params.toString();
-                if (queryString) wsUrl += '?' + queryString;
-
-                const socket = new WebSocket(wsUrl);
-                socket.binaryType = 'arraybuffer';
-
-                socket.onopen = () => {
-                    logDebug('Connected');
-                    term.focus();
-                    // 连接瞬间再次确认尺寸
-                    performFit();
-                    socket.send(JSON.stringify({
-                        resize: { rows: term.rows, cols: term.cols }
-                    }));
-                };
-
-                socket.onmessage = async (event) => {
-                    let text = '';
-                    if (typeof event.data === 'string') {
-                        try {
-                            const data = JSON.parse(event.data);
-                            text = data.message || event.data;
-                        } catch (e) {
-                            text = event.data;
-                        }
-                    } else {
-                        const buffer = event.data instanceof ArrayBuffer ? event.data : await event.data.arrayBuffer();
-                        text = new TextDecoder('utf-8').decode(buffer);
-                    }
-                    
-                    term.write(text);
-                    
-                    if (!userScrolledUp) {
-                        term.scrollToBottom();
-                    }
-                };
-
-                socket.onclose = () => {
-                    logDebug('Disconnected', true);
-                    term.write('\r\n\x1b[1;31m[Connection Closed]\x1b[0m\r\n');
-                    resizeObserver.disconnect();
-                };
-
-                socket.onerror = () => {
-                    logDebug('Network Error', true);
-                    term.write('\r\n\x1b[1;31m[Connection Error]\x1b[0m\r\n');
-                };
-
-                term.onData((data) => {
-                    if (socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({ data: data }));
-                    }
-                });
-
-                // 清理函数
-                window.addEventListener('beforeunload', () => {
-                    if (socket) socket.close();
-                    resizeObserver.disconnect();
-                });
-
-            } catch (err) {
-                logDebug('System Error: ' + err.message, true);
+                await this.initTerminal();
+                this.setupEventListeners();
+                this.connect();
+            } catch (error) {
+                console.error('Terminal initialization failed:', error);
+                this.updateStatus('error', 'Initialization Error');
             }
         }
 
-        initTerminal();
+        async initTerminal() {
+            this.term = new Terminal({
+                cursorBlink: true,
+                cursorStyle: 'block',
+                fontFamily: 'Consolas, "Liberation Mono", Menlo, Courier, monospace',
+                fontSize: 14,
+                lineHeight: 1.2,
+                letterSpacing: 0,
+                scrollback: 5000,
+                tabStopWidth: 4,
+                theme: {
+                    background: '#000000',
+                    foreground: '#ffffff',
+                    cursor: '#ffffff',
+                    cursorAccent: '#000000',
+                    selection: 'rgba(255, 255, 255, 0.3)',
+                    black: '#000000',
+                    red: '#cd3131',
+                    green: '#0dbc79',
+                    yellow: '#e5e510',
+                    blue: '#2472c8',
+                    magenta: '#bc3fbc',
+                    cyan: '#11a8cd',
+                    white: '#e5e5e5',
+                    brightBlack: '#666666',
+                    brightRed: '#f14c4c',
+                    brightGreen: '#23d18b',
+                    brightYellow: '#f5f543',
+                    brightBlue: '#3b8eea',
+                    brightMagenta: '#d670d6',
+                    brightCyan: '#29b8db',
+                    brightWhite: '#ffffff'
+                },
+                allowProposedApi: true,
+                rightClickSelectsWord: true,
+                wordSeparator: ' ()[]{}\'"`$'
+            });
+
+            this.fitAddon = new FitAddon.FitAddon();
+            this.term.loadAddon(this.fitAddon);
+
+            const container = document.getElementById('terminal-container');
+            this.term.open(container);
+
+            this.term.onScroll(() => {
+                this.userScrolledUp = this.term.buffer.active.viewportY > 0;
+            });
+
+            this.term.onData((data) => {
+                this.sendData(data);
+            });
+
+            this.term.onResize((size) => {
+                this.sendResize(size);
+            });
+
+            await this.waitForFonts();
+            await this.waitForLayout();
+            this.fitAddon.fit();
+        }
+
+        waitForFonts() {
+            return new Promise((resolve) => {
+                if (document.fonts) {
+                    document.fonts.ready.then(() => {
+                        requestAnimationFrame(() => resolve());
+                    });
+                } else {
+                    setTimeout(resolve, 100);
+                }
+            });
+        }
+
+        waitForLayout() {
+            return new Promise((resolve) => {
+                let attempts = 0;
+                const checkLayout = () => {
+                    attempts++;
+                    if (this.term.cols > 0 && this.term.rows > 0) {
+                        resolve();
+                    } else if (attempts < 10) {
+                        requestAnimationFrame(checkLayout);
+                    } else {
+                        resolve();
+                    }
+                };
+                setTimeout(checkLayout, 50);
+            });
+        }
+
+        setupEventListeners() {
+            this.reconnectBtn.addEventListener('click', () => {
+                if (!this.isConnecting) {
+                    this.connect();
+                }
+            });
+
+            this.closeBtn.addEventListener('click', () => {
+                this.disconnect();
+                window.close();
+            });
+
+            window.addEventListener('beforeunload', () => {
+                this.disconnect();
+            });
+
+            window.addEventListener('resize', () => {
+                this.debouncedResize();
+            });
+
+            this.resizeObserver = new ResizeObserver(() => {
+                this.debouncedResize();
+            });
+            this.resizeObserver.observe(document.getElementById('terminal-container'));
+        }
+
+        debouncedResize() {
+            clearTimeout(this.resizeTimeout);
+            this.resizeTimeout = setTimeout(() => {
+                this.handleResize();
+            }, 150);
+        }
+
+        handleResize() {
+            if (!this.term || !this.fitAddon) return;
+
+            try {
+                this.fitAddon.fit();
+                if (this.isConnected && this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    this.sendResize({ cols: this.term.cols, rows: this.term.rows });
+                }
+            } catch (error) {
+                console.warn('Resize failed:', error);
+            }
+        }
+
+        connect() {
+            if (this.isConnecting || this.isConnected) return;
+
+            this.isConnecting = true;
+            this.updateStatus('connecting', 'Connecting...');
+            this.reconnectBtn.disabled = true;
+
+            const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+            let wsUrl = protocol + window.location.host + '/ws/terminal/' + this.deviceId + '/';
+
+            const params = new URLSearchParams();
+            if (this.username) params.append('username', this.username);
+            if (this.password) params.append('password', this.password);
+            params.append('rows', this.term.rows);
+            params.append('cols', this.term.cols);
+
+            const queryString = params.toString();
+            if (queryString) wsUrl += '?' + queryString;
+
+            this.socket = new WebSocket(wsUrl);
+            this.socket.binaryType = 'arraybuffer';
+
+            this.socket.onopen = () => {
+                this.isConnected = true;
+                this.isConnecting = false;
+                this.reconnectAttempts = 0;
+                this.updateStatus('connected', 'Connected');
+                this.reconnectBtn.disabled = false;
+                this.term.focus();
+                this.sendResize({ cols: this.term.cols, rows: this.term.rows });
+            };
+
+            this.socket.onmessage = (event) => {
+                this.handleMessage(event);
+            };
+
+            this.socket.onclose = (event) => {
+                this.handleClose(event);
+            };
+
+            this.socket.onerror = (error) => {
+                this.handleError(error);
+            };
+        }
+
+        handleMessage(event) {
+            let text = '';
+            
+            if (typeof event.data === 'string') {
+                try {
+                    const data = JSON.parse(event.data);
+                    text = data.message || event.data;
+                } catch (e) {
+                    text = event.data;
+                }
+            } else {
+                const buffer = event.data instanceof ArrayBuffer ? 
+                    event.data : 
+                    new Uint8Array(event.data);
+                const decoder = new TextDecoder('utf-8');
+                text = decoder.decode(buffer, { stream: true });
+            }
+
+            this.term.write(text);
+
+            if (!this.userScrolledUp) {
+                this.term.scrollToBottom();
+            }
+        }
+
+        handleClose(event) {
+            this.isConnected = false;
+            this.isConnecting = false;
+            this.updateStatus('disconnected', 'Disconnected');
+            
+            this.term.write('\r\n\x1b[1;31m[Connection Closed]\x1b[0m\r\n');
+            this.term.options.cursorBlink = false;
+            this.term.options.disableStdin = true;
+
+            if (event.code !== 1000 && this.reconnectAttempts < this.maxReconnectAttempts) {
+                this.reconnectAttempts++;
+                setTimeout(() => {
+                    this.connect();
+                }, this.reconnectDelay);
+            } else {
+                this.reconnectBtn.disabled = false;
+            }
+        }
+
+        handleError(error) {
+            console.error('WebSocket error:', error);
+            this.updateStatus('error', 'Connection Error');
+            this.term.write('\r\n\x1b[1;31m[Connection Error]\x1b[0m\r\n');
+        }
+
+        disconnect() {
+            if (this.socket) {
+                this.socket.close(1000, 'User disconnected');
+            }
+            if (this.resizeObserver) {
+                this.resizeObserver.disconnect();
+            }
+            if (this.term) {
+                this.term.dispose();
+            }
+            this.isConnected = false;
+            this.isConnecting = false;
+        }
+
+        sendData(data) {
+            if (this.isConnected && this.socket && this.socket.readyState === WebSocket.OPEN) {
+                try {
+                    this.socket.send(JSON.stringify({ data: data }));
+                } catch (error) {
+                    console.error('Send data error:', error);
+                }
+            }
+        }
+
+        sendResize(size) {
+            if (this.isConnected && this.socket && this.socket.readyState === WebSocket.OPEN) {
+                try {
+                    this.socket.send(JSON.stringify({ 
+                        resize: { 
+                            rows: size.rows, 
+                            cols: size.cols 
+                        } 
+                    }));
+                } catch (error) {
+                    console.error('Send resize error:', error);
+                }
+            }
+        }
+
+        updateStatus(status, text) {
+            this.statusElement.className = 'status-badge ' + status;
+            this.statusElement.textContent = text;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const deviceId = {{ device.pk }};
+        const username = '{{ ssh_username|escapejs }}';
+        const password = '{{ ssh_password|escapejs }}';
+        
+        new WebTerminal(deviceId, username, password);
     });
+})();
 </script>
 {% endif %}
 {% endblock %}
